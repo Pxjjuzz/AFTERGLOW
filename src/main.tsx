@@ -15,15 +15,19 @@ import '@fontsource/manrope/latin-600.css';
 
 import '@/styles/index.css';
 import { App } from '@/app/App';
+import { SettingsApp } from '@/auto/SettingsApp';
+import { OverlayApp } from '@/auto/OverlayApp';
 
 const container = document.getElementById('root');
 
 if (!container) {
-  throw new Error('AFTERGLOW could not find its root element.');
+  throw new Error('AfterGlowV2 could not find its root element.');
 }
+
+const mode = new URLSearchParams(window.location.search).get('mode');
 
 createRoot(container).render(
   <StrictMode>
-    <App />
+    {mode === 'overlay' ? <OverlayApp /> : mode === 'settings' ? <SettingsApp /> : <App />}
   </StrictMode>,
 );

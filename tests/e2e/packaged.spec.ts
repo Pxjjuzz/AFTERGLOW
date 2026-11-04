@@ -7,7 +7,12 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 const projectRoot = process.cwd();
-const executablePath = path.join(projectRoot, 'out', 'AFTERGLOW-win32-x64', 'afterglow.exe');
+const executablePath = path.join(
+  projectRoot,
+  'out',
+  'AfterGlowV2-win32-x64',
+  'afterglowv2.exe',
+);
 const audioPath = path.join(projectRoot, 'samples', 'afterglow-sample.wav');
 const lyricsPath = path.join(projectRoot, 'samples', 'afterglow-sample.lrc');
 
@@ -68,13 +73,13 @@ async function stopProcess(child: ChildProcess): Promise<void> {
 test('packaged Windows build opens, restores files, plays, enters fullscreen, and exits', async () => {
   test.skip(!existsSync(executablePath), 'Run npm run package before the packaged smoke test.');
 
-  const userData = await mkdtemp(path.join(tmpdir(), 'afterglow-packaged-'));
+  const userData = await mkdtemp(path.join(tmpdir(), 'afterglowv2-packaged-'));
   const port = await freePort();
   const child = spawn(
     executablePath,
     [`--remote-debugging-port=${port}`, `--user-data-dir=${userData}`],
     {
-      env: { ...process.env, AFTERGLOW_USER_DATA: userData },
+      env: { ...process.env, AFTERGLOWV2_USER_DATA: userData },
       stdio: ['ignore', 'pipe', 'pipe'],
     },
   );
@@ -99,6 +104,8 @@ test('packaged Windows build opens, restores files, plays, enters fullscreen, an
     const page: Page =
       pages.find((candidate) => candidate.url().includes('index.html')) ?? pages[0]!;
     await page.waitForLoadState('domcontentloaded');
+    await expect(page.getByTestId('settings-screen')).toBeVisible();
+    await page.getByTestId('manual-tab').click();
     await expect(page.getByTestId('setup-screen')).toBeVisible();
 
     const selected = await page.evaluate(
@@ -118,6 +125,8 @@ test('packaged Windows build opens, restores files, plays, enters fullscreen, an
     // A reload is a realistic cold restore: the recent files come back from
     // the SQLite database inside the packaged app.
     await page.reload();
+    await expect(page.getByTestId('settings-screen')).toBeVisible();
+    await page.getByTestId('manual-tab').click();
     await expect(page.getByTestId('setup-screen')).toBeVisible();
     await expect(page.getByTestId('audio-dropzone')).toContainText('afterglow-sample.wav');
     await expect(page.getByTestId('lyrics-dropzone')).toContainText('First Light');

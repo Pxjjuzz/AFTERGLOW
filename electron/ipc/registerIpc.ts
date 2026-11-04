@@ -18,7 +18,9 @@ import { readLyricFile, validateSelectedPath } from '../files/validation';
 import { sanitizeSettingsPatch, type SettingsStore } from '../persistence/settingsStore';
 
 interface IpcContext {
-  getWindow: () => BrowserWindow | null;
+  getWindows: () => BrowserWindow[];
+  getSettingsWindow: () => BrowserWindow | null;
+  getOverlayWindow: () => BrowserWindow | null;
   store: SettingsStore;
   isPackaged: boolean;
 }
@@ -51,18 +53,39 @@ function waitForEvent(target: BrowserWindow, event: string, timeoutMs: number): 
 }
 
 export function registerIpc(context: IpcContext): void {
-  const { getWindow, store, isPackaged } = context;
+  const { getWindows, getSettingsWindow, store, isPackaged } = context;
   let blockerId: number | null = null;
   let programmaticExit = false;
+  let fullscreenWindow: BrowserWindow | null = null;
+  const watchedWindows = new WeakSet<BrowserWindow>();
+
+  const watchFullscreen = (window: BrowserWindow): void => {
+    if (watchedWindows.has(window)) return;
+    watchedWindows.add(window);
+    window.on('leave-full-screen', () => {
+      stopBlocker();
+      if (programmaticExit) {
+        programmaticExit = false;
+        return;
+      }
+      sendExitRequest('os');
+    });
+    window.on('closed', () => {
+      stopBlocker();
+      if (fullscreenWindow === window) fullscreenWindow = null;
+    });
+  };
 
   const senderWindow = (
     event: Pick<IpcMainInvokeEvent, 'sender' | 'senderFrame'>,
   ): BrowserWindow | null => {
-    const window = getWindow();
-    if (!window || window.isDestroyed()) return null;
-    if (event.sender !== window.webContents) return null;
-    if (event.senderFrame && event.senderFrame !== window.webContents.mainFrame) return null;
-    return window;
+    for (const window of getWindows()) {
+      if (window.isDestroyed()) continue;
+      if (event.sender !== window.webContents) continue;
+      if (event.senderFrame && event.senderFrame !== window.webContents.mainFrame) continue;
+      return window;
+    }
+    return null;
   };
 
   const assertTrusted = (event: IpcMainInvokeEvent): BrowserWindow => {
@@ -85,7 +108,7 @@ export function registerIpc(context: IpcContext): void {
   };
 
   const sendExitRequest = (reason: ExitRequest['reason']) => {
-    const window = getWindow();
+    const window = fullscreenWindow ?? getSettingsWindow();
     if (window && !window.isDestroyed()) {
       window.webContents.send('experience:exit-requested', { reason });
     }
@@ -112,7 +135,7 @@ export function registerIpc(context: IpcContext): void {
       }
       return await validateSelectedPath(result.filePaths[0], kind);
     } catch (error) {
-      console.error('[afterglow] file dialog failed', error);
+      console.error('[afterglowv2] file dialog failed', error);
       return {
         ok: false as const,
         error: {
@@ -153,6 +176,8 @@ export function registerIpc(context: IpcContext): void {
 
   ipcMain.handle('experience:enter', async (event) => {
     const window = assertTrusted(event);
+    fullscreenWindow = window;
+    watchFullscreen(window);
     if (window.isFullScreen()) {
       startBlocker();
       return { ok: true, fullscreen: true };
@@ -230,22 +255,7 @@ export function registerIpc(context: IpcContext): void {
     window?.close();
   });
 
-  const window = getWindow();
-  if (window) {
-    window.on('leave-full-screen', () => {
-      stopBlocker();
-      if (programmaticExit) {
-        programmaticExit = false;
-        return;
-      }
-      sendExitRequest('os');
-    });
-    window.on('closed', () => {
-      stopBlocker();
-    });
-  }
-
   if (!isPackaged) {
-    console.info('[afterglow] IPC registered in development mode');
+    console.info('[afterglowv2] IPC registered in development mode');
   }
 }

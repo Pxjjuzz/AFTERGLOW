@@ -1,8 +1,8 @@
 {
-  "name": "afterglow",
-  "productName": "AFTERGLOW",
-  "version": "1.0.1",
-  "description": "Every song creates its own universe. A local, fullscreen constellation lyrics experience.",
+  "name": "afterglowv2",
+  "productName": "AfterGlowV2",
+  "version": "2.0.0",
+  "description": "Automatic ambient constellation lyrics for whatever is playing on Windows. A sibling of AFTERGLOW.",
   "author": "AFTERGLOW",
   "license": "MIT",
   "private": true,

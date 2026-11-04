@@ -9,9 +9,17 @@ const lyricsPath = path.join(projectRoot, 'samples', 'afterglow-sample.lrc');
 
 async function isFullscreen(app: ElectronApplication): Promise<boolean> {
   return app.evaluate(({ BrowserWindow }) => {
-    const window = BrowserWindow.getAllWindows()[0];
-    return Boolean(window && !window.isDestroyed() && window.isFullScreen());
+    const window = BrowserWindow.getAllWindows().find(
+      (candidate) => !candidate.isDestroyed() && candidate.isVisible(),
+    );
+    return Boolean(window && window.isFullScreen());
   });
+}
+
+async function openManualTab(page: Page): Promise<void> {
+  await expect(page.getByTestId('settings-screen')).toBeVisible();
+  await page.getByTestId('manual-tab').click();
+  await expect(page.getByTestId('setup-screen')).toBeVisible();
 }
 
 async function audioState(page: Page): Promise<{ paused: boolean; currentTime: number; duration: number }> {
@@ -50,6 +58,7 @@ test('setup, fullscreen experience, keyboard control, and re-entry', async () =>
   try {
     const page = await app.firstWindow();
     await page.waitForLoadState('domcontentloaded');
+    await openManualTab(page);
 
     await expect(page.getByTestId('setup-screen')).toBeVisible();
     await expect(page.getByRole('heading', { name: 'AFTERGLOW' })).toBeVisible();

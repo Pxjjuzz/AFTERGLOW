@@ -8,23 +8,23 @@ import MakerZIP from '@electron-forge/maker-zip';
 export default {
   packagerConfig: {
     asar: true,
-    name: 'AFTERGLOW',
-    executableName: 'afterglow',
-    appBundleId: 'com.afterglow.app',
+    name: 'AfterGlowV2',
+    executableName: 'afterglowv2',
+    appBundleId: 'com.pxjuzz.afterglowv2',
     icon: './assets/icon',
     win32metadata: {
       CompanyName: 'AFTERGLOW',
-      FileDescription: 'AFTERGLOW — constellation lyrics experience',
-      ProductName: 'AFTERGLOW',
-      InternalName: 'afterglow',
+      FileDescription: 'AfterGlowV2 — automatic constellation lyrics experience',
+      ProductName: 'AfterGlowV2',
+      InternalName: 'afterglowv2',
     },
   },
   rebuildConfig: {},
   makers: [
     new MakerSquirrel({
-      name: 'afterglow',
+      name: 'afterglowv2',
       authors: 'AFTERGLOW',
-      description: 'Every song creates its own universe.',
+      description: 'Automatic ambient constellation lyrics for Windows.',
       setupIcon: './assets/icon.ico',
     }),
     new MakerZIP({}, ['win32']),
