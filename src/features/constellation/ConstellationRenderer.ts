@@ -1,5 +1,6 @@
 import { gsap } from 'gsap';
 import type { ConstellationStyle } from '@shared/ipc';
+import { SILENT_SPECTRUM, type SpectrumLevels } from '@/lib/spectrum';
 import type { LyricTimeline, TimedLine, TimelineFrame, TimedWord } from '@/features/lyrics/timeline';
 import { createComposition, mulberry32, type Composition, type LayoutNode } from './layout';
 import { getCanvasMetrics } from './canvasMetrics';
@@ -17,6 +18,7 @@ export interface RendererConfig {
   intensity: number;
   reducedMotion: boolean;
   sample: () => PlaybackSample;
+  levels?: () => SpectrumLevels;
   onLineChange?: (lineIndex: number, line: TimedLine | null) => void;
 }
 
@@ -48,12 +50,21 @@ interface TransitionState {
   oldDrift: number;
 }
 
-interface EdgeBlob {
-  x: number;
-  y: number;
-  radius: number;
-  alpha: number;
+interface EdgeBar {
+  edge: 'top' | 'bottom';
+  /** Centre along the edge, 0..1. */
+  center: number;
+  /** Half length as a fraction of the screen width. */
+  half: number;
+  /** Horizontal drift amplitude, in CSS pixels. */
+  drift: number;
+  driftSpeed: number;
+  breatheSpeed: number;
+  hotSpeed: number;
   phase: number;
+  weight: number;
+  /** Which band drives this segment hardest. */
+  band: 'bass' | 'mid' | 'treble' | 'level';
 }
 
 interface WordHandoff {
@@ -62,49 +73,6 @@ interface WordHandoff {
   to: { x: number; y: number };
   startedAt: number;
   duration: number;
-}
-
-function roundedRectPath(
-  context: CanvasRenderingContext2D,
-  x: number,
-  y: number,
-  width: number,
-  height: number,
-  radius: number,
-): void {
-  const r = Math.min(radius, width / 2, height / 2);
-  context.beginPath();
-  context.moveTo(x + r, y);
-  context.lineTo(x + width - r, y);
-  context.quadraticCurveTo(x + width, y, x + width, y + r);
-  context.lineTo(x + width, y + height - r);
-  context.quadraticCurveTo(x + width, y + height, x + width - r, y + height);
-  context.lineTo(x + r, y + height);
-  context.quadraticCurveTo(x, y + height, x, y + height - r);
-  context.lineTo(x, y + r);
-  context.quadraticCurveTo(x, y, x + r, y);
-  context.closePath();
-}
-
-function perimeterPoint(
-  t: number,
-  width: number,
-  height: number,
-  inset: number,
-): { x: number; y: number } {
-  const innerWidth = Math.max(1, width - inset * 2);
-  const innerHeight = Math.max(1, height - inset * 2);
-  const perimeter = innerWidth * 2 + innerHeight * 2;
-  let distance = ((t % 1) + 1) % 1 * perimeter;
-  if (distance <= innerWidth) return { x: inset + distance, y: inset };
-  distance -= innerWidth;
-  if (distance <= innerHeight) return { x: width - inset, y: inset + distance };
-  distance -= innerHeight;
-  if (distance <= innerWidth) {
-    return { x: width - inset - distance, y: height - inset };
-  }
-  distance -= innerWidth;
-  return { x: inset, y: height - inset - distance };
 }
 
 const STAGE_TINT = '139, 92, 255';
@@ -237,7 +205,8 @@ export class ConstellationRenderer {
   private dpr = 1;
   private stars: AmbientStar[] = [];
   private motes: Mote[] = [];
-  private edgeBlobs: EdgeBlob[] = [];
+  private edgeBars: EdgeBar[] = [];
+  private spectrum: SpectrumLevels = { ...SILENT_SPECTRUM };
   private currentComposition: Composition | null = null;
   private previousComposition: Composition | null = null;
   private currentFrame: TimelineFrame | null = null;
@@ -323,7 +292,7 @@ export class ConstellationRenderer {
     this.canvas.height = metrics.pixelHeight;
     this.context.setTransform(metrics.dpr, 0, 0, metrics.dpr, 0, 0);
     this.buildAmbientField();
-    this.buildEdgeBlobs();
+    this.buildEdgeBars();
     this.rebuildCurrentComposition();
     if (!this.running) this.drawOnce();
   }
@@ -354,36 +323,89 @@ export class ConstellationRenderer {
     }));
   }
 
-  private buildEdgeBlobs(): void {
-    const inset = clamp(Math.min(this.width, this.height) * 0.018, 13, 26);
+  /**
+   * Independent light segments along the top and bottom bezel only. They never
+   * meet at the corners, so the frame stays open like the reference: a band of
+   * glow, a gap, another band. Each segment gets its own drift and pulse so the
+   * edges breathe instead of reading as a CSS border.
+   */
+  private buildEdgeBars(): void {
     const random = mulberry32(0x5c1e9a);
-    const blobs: EdgeBlob[] = [
-      { t: 0, radius: 150, alpha: 0.16 },
-      { t: 0.25, radius: 190, alpha: 0.14 },
-      { t: 0.5, radius: 150, alpha: 0.13 },
-      { t: 0.75, radius: 200, alpha: 0.15 },
-    ].map((corner) => {
-      const point = perimeterPoint(corner.t, this.width, this.height, inset);
-      return {
-        x: point.x,
-        y: point.y,
-        radius: corner.radius,
-        alpha: corner.alpha,
-        phase: random() * Math.PI * 2,
-      };
-    });
-
-    for (let index = 0; index < 14; index += 1) {
-      const point = perimeterPoint(0.035 + random() * 0.93, this.width, this.height, inset);
-      blobs.push({
-        x: point.x,
-        y: point.y,
-        radius: 36 + random() * 92,
-        alpha: 0.035 + random() * 0.075,
-        phase: random() * Math.PI * 2,
-      });
-    }
-    this.edgeBlobs = blobs;
+    const phase = (): number => random() * Math.PI * 2;
+    this.edgeBars = [
+      {
+        edge: 'top',
+        center: 0.2,
+        half: 0.13,
+        drift: 26,
+        driftSpeed: 0.7,
+        breatheSpeed: 0.9,
+        hotSpeed: 1.1,
+        phase: phase(),
+        weight: 0.95,
+        band: 'treble',
+      },
+      {
+        edge: 'top',
+        center: 0.5,
+        half: 0.13,
+        drift: 18,
+        driftSpeed: 1.1,
+        breatheSpeed: 1.25,
+        hotSpeed: 0.8,
+        phase: phase(),
+        weight: 1,
+        band: 'mid',
+      },
+      {
+        edge: 'top',
+        center: 0.8,
+        half: 0.13,
+        drift: 30,
+        driftSpeed: 0.85,
+        breatheSpeed: 1.05,
+        hotSpeed: 1.35,
+        phase: phase(),
+        weight: 0.92,
+        band: 'treble',
+      },
+      {
+        edge: 'bottom',
+        center: 0.16,
+        half: 0.12,
+        drift: 22,
+        driftSpeed: 0.95,
+        breatheSpeed: 1.15,
+        hotSpeed: 1.2,
+        phase: phase(),
+        weight: 0.9,
+        band: 'bass',
+      },
+      {
+        edge: 'bottom',
+        center: 0.47,
+        half: 0.16,
+        drift: 32,
+        driftSpeed: 0.75,
+        breatheSpeed: 0.85,
+        hotSpeed: 0.95,
+        phase: phase(),
+        weight: 1,
+        band: 'level',
+      },
+      {
+        edge: 'bottom',
+        center: 0.8,
+        half: 0.13,
+        drift: 24,
+        driftSpeed: 1.05,
+        breatheSpeed: 1.2,
+        hotSpeed: 1.15,
+        phase: phase(),
+        weight: 0.94,
+        band: 'mid',
+      },
+    ];
   }
 
   private buildComposition(line: TimedLine): Composition {
@@ -618,12 +640,14 @@ export class ConstellationRenderer {
     this.context.fillStyle = '#000000';
     this.context.fillRect(0, 0, this.width, this.height);
     this.context.restore();
-    this.drawEdgeLight(now);
 
     const { sample, frame } = this.sampleNow();
     const delta = this.lastDrawAt > 0 ? Math.min(0.05, (now - this.lastDrawAt) / 1000) : 0.016;
     this.animationDelta = delta;
     this.lastDrawAt = now;
+
+    this.updateSpectrum(delta);
+    this.drawEdgeLight(now);
 
     if (!this.config.reducedMotion) {
       this.pointer.x += (this.pointer.targetX - this.pointer.x) * 0.035;
@@ -650,113 +674,127 @@ export class ConstellationRenderer {
     });
   }
 
+  /**
+   * Fast attack, slow release. Music hits brighten the edge immediately and
+   * then settle, which reads as the light reacting to the track rather than
+   * flickering with every FFT frame.
+   */
+  private updateSpectrum(delta: number): void {
+    const target = this.config.levels?.() ?? SILENT_SPECTRUM;
+    const attack = 1 - Math.exp(-delta * 22);
+    const release = 1 - Math.exp(-delta * 4.5);
+    const mix = (current: number, next: number): number =>
+      current + (next - current) * (next > current ? attack : release);
+    const levels = this.spectrum;
+    levels.level = mix(levels.level, target.level);
+    levels.bass = mix(levels.bass, target.bass);
+    levels.mid = mix(levels.mid, target.mid);
+    levels.treble = mix(levels.treble, target.treble);
+  }
+
+  /**
+   * One feathered ellipse of light. Scaling the context turns a radial
+   * gradient into a soft horizontal capsule, so the band has no hard edges in
+   * either axis.
+   */
+  private drawEdgeGlow(
+    x: number,
+    y: number,
+    radiusX: number,
+    radiusY: number,
+    rgb: string,
+    alpha: number,
+  ): void {
+    const peak = clamp(alpha);
+    if (peak <= 0.002 || radiusX <= 1 || radiusY <= 0.5) return;
+    const context = this.context;
+    context.save();
+    context.translate(x, y);
+    context.scale(1, radiusY / radiusX);
+    const gradient = context.createRadialGradient(0, 0, 0, 0, 0, radiusX);
+    gradient.addColorStop(0, `rgba(${rgb},${peak})`);
+    gradient.addColorStop(0.45, `rgba(${rgb},${clamp(peak * 0.6)})`);
+    gradient.addColorStop(0.78, `rgba(${rgb},${clamp(peak * 0.18)})`);
+    gradient.addColorStop(1, `rgba(${rgb},0)`);
+    context.fillStyle = gradient;
+    context.fillRect(-radiusX, -radiusX, radiusX * 2, radiusX * 2);
+    context.restore();
+  }
+
   private drawEdgeLight(now: number): void {
     const context = this.context;
     const opacity = this.transition.starsAlpha;
     if (opacity <= 0.001) return;
     const intensity = clamp(this.config.intensity, 0.5, 1.35);
-    const inset = clamp(Math.min(this.width, this.height) * 0.018, 13, 26);
-    const radius = clamp(inset * 1.45, 19, 34);
-    const breathe = 0.72 + 0.28 * Math.sin(now * 0.00055);
-    const alpha = clamp(opacity * breathe * intensity);
+    const levels = this.spectrum;
+    const inset = clamp(Math.min(this.width, this.height) * 0.012, 8, 18);
+    const motion = this.config.reducedMotion ? 0 : 1;
 
     context.save();
     context.globalCompositeOperation = 'lighter';
 
-    // Uneven blooms along the perimeter keep the frame alive rather than
-    // looking like a uniform CSS border.
-    for (const blob of this.edgeBlobs) {
-      const pulse = 0.7 + 0.3 * Math.sin(now * 0.00034 + blob.phase);
-      const gradient = context.createRadialGradient(
-        blob.x,
-        blob.y,
-        0,
-        blob.x,
-        blob.y,
-        blob.radius,
+    // Segments are drawn independently: no corner joins, no wrap-around, and
+    // each capsule fades to zero before the next segment starts.
+    for (const bar of this.edgeBars) {
+      const band =
+        bar.band === 'bass'
+          ? levels.bass
+          : bar.band === 'mid'
+            ? levels.mid
+            : bar.band === 'treble'
+              ? levels.treble
+              : levels.level;
+      const energy = clamp(0.3 + band * 1.2);
+      const breathe = 0.82 + 0.18 * Math.sin(now * 0.00055 * bar.breatheSpeed + bar.phase) * motion;
+      const drift = Math.sin(now * 0.00019 * bar.driftSpeed + bar.phase) * bar.drift * motion;
+      const centerX = bar.center * this.width + drift;
+      const half = Math.max(70, bar.half * this.width * (1 + band * 0.1));
+      const startX = centerX - half;
+      const endX = centerX + half;
+      const y = bar.edge === 'top' ? inset : this.height - inset;
+
+      // The bright spot slides along the band and swings further when its band
+      // is loud, so motion follows the music instead of a fixed timer.
+      const sway = Math.sin(now * 0.00085 * bar.hotSpeed + bar.phase) * motion;
+      const hotT = clamp(0.5 + sway * (0.16 + band * 0.2), 0.2, 0.8);
+      const jitter = Math.sin(now * 0.0016 * bar.hotSpeed + bar.phase) * band * 2.5 * motion;
+
+      const strength = clamp(
+        opacity * intensity * bar.weight * energy * breathe * (0.72 + levels.level * 0.6),
       );
-      gradient.addColorStop(0, `rgba(${EDGE_CORE},${clamp(blob.alpha * pulse * alpha)})`);
-      gradient.addColorStop(0.35, `rgba(${STAGE_TINT},${clamp(blob.alpha * 0.72 * pulse * alpha)})`);
-      gradient.addColorStop(1, `rgba(${STAGE_TINT},0)`);
-      context.fillStyle = gradient;
-      context.fillRect(
-        blob.x - blob.radius,
-        blob.y - blob.radius,
-        blob.radius * 2,
-        blob.radius * 2,
+      if (strength <= 0.002) continue;
+
+      const hotX = startX + (endX - startX) * hotT;
+
+      // Bloom -> halo -> travelling highlight -> hairline core. Every pass is
+      // an ellipse, so the band feathers into the black on all sides.
+      this.drawEdgeGlow(
+        centerX,
+        y,
+        half * 1.06,
+        46 + band * 28,
+        STAGE_TINT,
+        strength * 0.44,
       );
+      this.drawEdgeGlow(centerX, y, half * 0.98, 18 + band * 12, '166, 128, 255', strength * 0.6);
+      this.drawEdgeGlow(
+        hotX,
+        y + jitter,
+        half * 0.45,
+        24 + band * 12,
+        EDGE_CORE,
+        strength * 0.3,
+      );
+      this.drawEdgeGlow(
+        hotX,
+        y + jitter,
+        half * 0.32,
+        3.2 + band * 2.6,
+        '236, 222, 255',
+        strength * 0.85,
+      );
+      this.drawEdgeGlow(centerX, y, half * 0.94, 2.2 + band * 2, '186, 154, 255', strength * 0.95);
     }
-
-    // A slow comet travels the bezel, leaving a soft wake. This is the part
-    // that makes the edge read as ambient light instead of a static border.
-    const travel = ((now * 0.00012) % 1 + 1) % 1;
-    for (let index = 0; index < 7; index += 1) {
-      const t = travel - index * 0.0075;
-      const point = perimeterPoint(t, this.width, this.height, inset);
-      const cometRadius = Math.max(18, 62 - index * 7);
-      const wake = clamp((0.3 - index * 0.037) * alpha);
-      if (wake <= 0.002) continue;
-      const gradient = context.createRadialGradient(
-        point.x,
-        point.y,
-        0,
-        point.x,
-        point.y,
-        cometRadius,
-      );
-      gradient.addColorStop(0, `rgba(255, 252, 255, ${wake})`);
-      gradient.addColorStop(0.18, `rgba(${EDGE_CORE},${wake * 0.82})`);
-      gradient.addColorStop(0.48, `rgba(${STAGE_TINT},${wake * 0.42})`);
-      gradient.addColorStop(1, `rgba(${STAGE_TINT},0)`);
-      context.fillStyle = gradient;
-      context.fillRect(
-        point.x - cometRadius,
-        point.y - cometRadius,
-        cometRadius * 2,
-        cometRadius * 2,
-      );
-    }
-
-    // A tight core keeps the comet readable as a light source on the bezel.
-    const head = perimeterPoint(travel, this.width, this.height, inset);
-    const headGradient = context.createRadialGradient(head.x, head.y, 0, head.x, head.y, 13);
-    headGradient.addColorStop(0, `rgba(255, 255, 255, ${clamp(0.5 * alpha)})`);
-    headGradient.addColorStop(0.5, `rgba(${EDGE_CORE},${clamp(0.22 * alpha)})`);
-    headGradient.addColorStop(1, `rgba(${EDGE_CORE},0)`);
-    context.fillStyle = headGradient;
-    context.fillRect(head.x - 13, head.y - 13, 26, 26);
-
-    roundedRectPath(
-      context,
-      inset,
-      inset,
-      Math.max(1, this.width - inset * 2),
-      Math.max(1, this.height - inset * 2),
-      radius,
-    );
-    context.lineJoin = 'round';
-
-    context.strokeStyle = `rgba(100, 58, 225, ${clamp(0.12 * alpha)})`;
-    context.lineWidth = 34;
-    context.shadowColor = `rgba(112, 66, 245, ${clamp(0.55 * alpha)})`;
-    context.shadowBlur = 46;
-    context.stroke();
-
-    context.strokeStyle = `rgba(${STAGE_TINT},${clamp(0.24 * alpha)})`;
-    context.lineWidth = 7;
-    context.shadowBlur = 22;
-    context.stroke();
-
-    const core = context.createLinearGradient(inset, inset, this.width - inset, this.height - inset);
-    core.addColorStop(0, `rgba(${EDGE_CORE},${clamp(0.92 * alpha)})`);
-    core.addColorStop(0.28, `rgba(166, 128, 255,${clamp(0.7 * alpha)})`);
-    core.addColorStop(0.58, `rgba(${EDGE_CORE},${clamp(0.86 * alpha)})`);
-    core.addColorStop(1, `rgba(124, 78, 255,${clamp(0.76 * alpha)})`);
-    context.strokeStyle = core;
-    context.lineWidth = 1.25;
-    context.shadowColor = `rgba(${EDGE_CORE},${clamp(0.7 * alpha)})`;
-    context.shadowBlur = 10;
-    context.stroke();
 
     context.restore();
   }
@@ -1206,7 +1244,8 @@ export class ConstellationRenderer {
     this.previousComposition = null;
     this.stars = [];
     this.motes = [];
-    this.edgeBlobs = [];
+    this.edgeBars = [];
+    this.spectrum = { ...SILENT_SPECTRUM };
     this.handoffs = [];
     this.wordEnergy = [];
     this.energyComposition = null;

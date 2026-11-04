@@ -95,6 +95,7 @@ export function Experience({ session, service, onExited, onFatalError }: Experie
           service.duration > 0 &&
           service.currentTime >= service.duration - 0.05,
       }),
+      levels: () => service.getSpectrum(),
       onLineChange: (_index, line) => {
         setLiveLine(line?.text ?? '');
       },

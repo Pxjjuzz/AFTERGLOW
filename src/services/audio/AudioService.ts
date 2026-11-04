@@ -1,3 +1,5 @@
+import { SILENT_SPECTRUM, averageBand, type SpectrumLevels } from '@/lib/spectrum';
+
 export type AudioStatus = 'idle' | 'loading' | 'ready' | 'playing' | 'paused' | 'ended' | 'error';
 
 export interface AudioSnapshot {
@@ -47,10 +49,17 @@ export class AudioService {
   private destroyed = false;
   private loadedMetadataHandler: (() => void) | null = null;
   private loadedErrorHandler: (() => void) | null = null;
+  private audioContext: AudioContext | null = null;
+  private analyser: AnalyserNode | null = null;
+  private spectrumData: Uint8Array<ArrayBuffer> | null = null;
+  private analyserUnavailable = false;
 
   constructor(audio: HTMLAudioElement) {
     this.audio = audio;
     this.audio.preload = 'auto';
+    // The media protocol answers with Access-Control-Allow-Origin, so the
+    // element can feed a WebAudio analyser without tainting it.
+    this.audio.crossOrigin = 'anonymous';
     this.audio.addEventListener('loadedmetadata', this.onMetadata);
     this.audio.addEventListener('durationchange', this.onMetadata);
     this.audio.addEventListener('play', this.onPlay);
@@ -140,6 +149,54 @@ export class AudioService {
     return this.snapshot();
   }
 
+  /**
+   * Route the element through a WebAudio analyser so the renderer can react to
+   * the music. If the context cannot start (autoplay policy, no device), the
+   * element keeps playing through its default path and the spectrum stays silent.
+   */
+  private async ensureAnalyser(): Promise<void> {
+    if (this.analyser || this.analyserUnavailable || this.destroyed) return;
+    try {
+      const context = new AudioContext();
+      if (context.state === 'suspended') await context.resume();
+      if (context.state !== 'running') {
+        await context.close();
+        this.analyserUnavailable = true;
+        return;
+      }
+      const source = context.createMediaElementSource(this.audio);
+      const analyser = context.createAnalyser();
+      analyser.fftSize = 512;
+      analyser.smoothingTimeConstant = 0.7;
+      source.connect(analyser);
+      analyser.connect(context.destination);
+      this.audioContext = context;
+      this.analyser = analyser;
+      this.spectrumData = new Uint8Array(new ArrayBuffer(analyser.frequencyBinCount));
+    } catch {
+      this.analyserUnavailable = true;
+    }
+  }
+
+  /** Current loudness bands, sampled on demand by the render loop. */
+  getSpectrum(): SpectrumLevels {
+    const analyser = this.analyser;
+    const data = this.spectrumData;
+    const context = this.audioContext;
+    if (!analyser || !data || !context) return SILENT_SPECTRUM;
+
+    analyser.getByteFrequencyData(data);
+    const binHz = context.sampleRate / 2 / data.length;
+    const bin = (hz: number): number =>
+      Math.max(0, Math.min(data.length - 1, Math.round(hz / binHz)));
+
+    const bass = averageBand(data, bin(30), bin(160));
+    const mid = averageBand(data, bin(160), bin(2000));
+    const treble = averageBand(data, bin(2000), bin(8000));
+    const level = Math.min(1, bass * 0.45 + mid * 0.4 + treble * 0.15);
+    return { level, bass, mid, treble };
+  }
+
   async load(url: string): Promise<number> {
     if (this.destroyed) throw new AudioServiceError('Playback has been disposed.', 'NO_SOURCE');
     this.playPromise = null;
@@ -210,6 +267,11 @@ export class AudioService {
 
     if (this.audio.ended) {
       this.audio.currentTime = 0;
+    }
+
+    await this.ensureAnalyser();
+    if (this.audioContext?.state === 'suspended') {
+      await this.audioContext.resume().catch(() => undefined);
     }
 
     this.error = null;
@@ -305,5 +367,11 @@ export class AudioService {
     this.audio.load();
     this.listeners.clear();
     this.status = 'idle';
+    this.analyser = null;
+    this.spectrumData = null;
+    if (this.audioContext) {
+      void this.audioContext.close().catch(() => undefined);
+      this.audioContext = null;
+    }
   }
 }
