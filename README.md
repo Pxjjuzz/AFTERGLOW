@@ -8,8 +8,8 @@ AFTERGLOW is a local, offline Windows desktop app that turns an audio file and i
 
 No build tools needed. Grab the latest build from [**Releases**](https://github.com/Pxjjuzz/AFTERGLOW/releases/latest):
 
-- **AFTERGLOW-1.0.0.Setup.exe** — recommended. Download, run it, and AFTERGLOW installs to your user profile with a Start Menu shortcut. No admin rights needed.
-- **AFTERGLOW-win32-x64-1.0.0.zip** — portable. Extract anywhere and run `afterglow.exe`.
+- **AFTERGLOW-1.0.1.Setup.exe** — recommended. Download, run it, and AFTERGLOW installs to your user profile with a Start Menu shortcut. No admin rights needed.
+- **AFTERGLOW-win32-x64-1.0.1.zip** — portable. Extract anywhere and run `afterglow.exe`.
 
 The build is unsigned, so Windows SmartScreen may show *"Windows protected your PC"*. Choose **More info**, then **Run anyway**.
 
