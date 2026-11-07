@@ -3,3 +3,4 @@
 Notes from development.
 
 - 2026-11-06 - Started the dev log.
+- 2026-11-07 - Notes from today.
